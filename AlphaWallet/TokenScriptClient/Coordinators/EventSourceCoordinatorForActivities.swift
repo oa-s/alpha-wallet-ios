@@ -79,7 +79,7 @@ class EventSourceCoordinatorForActivities: EventSourceCoordinatorForActivitiesTy
 
     typealias EnabledTokenAddresses = [(contract: AlphaWallet.Address, tokenType: TokenType, server: RPCServer)]
     private func tokensForEnabledRPCServers() -> Promise<EnabledTokenAddresses> {
-        tokenCollection.tokenObjects.map { tokenObjects -> EnabledTokenAddresses in
+        tokenCollection.tokenObjectsPromise.map { tokenObjects -> EnabledTokenAddresses in
             tokenObjects.compactMap { (contract: $0.contractAddress, tokenType: $0.type, server: $0.server) }
         }
     }

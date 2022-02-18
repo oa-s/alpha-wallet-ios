@@ -75,7 +75,7 @@ class EventSourceCoordinator: EventSourceCoordinatorType {
         isFetching = true
 
         firstly {
-            tokenCollection.tokenObjects
+            tokenCollection.tokenObjectsPromise
         //NOTE: calling .fetchEventsByTokenId shoul be performed on .main queue
         }.then(on: .main, { tokens -> Promise<Void> in
             return Promise { seal in

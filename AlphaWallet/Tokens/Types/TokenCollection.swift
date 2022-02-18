@@ -31,7 +31,11 @@ class TokenCollection {
         subscribers.append(subscribe)
     }
 
-    var tokenObjects: Promise<[TokenObject]> {
+    var _tokenObjects: [TokenObject] {
+        return tokenDataStores.compactMap { $0.enabledObject }.flatMap { $0 }
+    }
+
+    var tokenObjectsPromise: Promise<[TokenObject]> {
         return Promise<[TokenObject]> { seal in
             DispatchQueue.main.async { [weak self] in
                 guard let strongSelf = self else { return seal.reject(PMKError.cancelled) }
@@ -56,8 +60,12 @@ class TokenCollection {
         }
     }
 
+    func tokenObject(address: AlphaWallet.Address, server: RPCServer) -> TokenObject? {
+        _tokenObjects.first(where: { $0.contractAddress.sameContract(as: address) && $0.server == server })
+    }
+
     func tokenObjectPromise(forContract contract: AlphaWallet.Address) -> Promise<TokenObject?> {
-        tokenObjects.map { tokenObjects -> TokenObject? in
+        tokenObjectsPromise.map { tokenObjects -> TokenObject? in
             tokenObjects.first(where: { $0.contractAddress == contract })
         }
     }
