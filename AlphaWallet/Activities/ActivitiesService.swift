@@ -9,13 +9,21 @@ import Foundation
 import CoreFoundation
 import PromiseKit
 import Combine
+import RealmSwift
 
 protocol ActivitiesServiceType: class {
     var sessions: ServerDictionary<WalletSession> { get }
     var activitiesPublisher: AnyPublisher<[ActivitiesViewModel.MappedToDateActivityOrTransaction], Never> { get }
     var didUpdateActivityPublisher: AnyPublisher<Activity, Never> { get }
 
-    func start()
+//<<<<<<< HEAD
+//    func start()
+//=======
+    func kk ()
+    
+    func fetch()
+    func stop()
+//>>>>>>> fac3ac014 (Add create activity service)
     func reinject(activity: Activity)
     func copy(activitiesFilterStrategy: ActivitiesFilterStrategy, transactionsFilterStrategy: TransactionsFilterStrategy) -> ActivitiesServiceType
 }
@@ -33,8 +41,12 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
     private let eventsActivityDataStore: EventsActivityDataStoreProtocol
     private let eventsDataStore: NonActivityEventsDataStore
     //Dictionary for lookup. Using `.firstIndex` too many times is too slow (60s for 10k events)
+//<<<<<<< HEAD
     private var activitiesIndexLookup: AtomicDictionary<Int, (index: Int, activity: Activity)> = .init()
     private var activities: AtomicArray<Activity> = .init()
+//=======
+//    private var activities: [Activity] = .init()
+//>>>>>>> b7fb366d4 (Add create activity service)
 
     private var tokensAndTokenHolders: AtomicDictionary<AddressAndRPCServer, [TokenHolder]> = .init()
     private var rateLimitedViewControllerReloader: RateLimiter?
@@ -50,7 +62,14 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
     private let activitiesFilterStrategy: ActivitiesFilterStrategy
     private let transactionDataStore: TransactionDataStore
     private let transactionsFilterStrategy: TransactionsFilterStrategy
+
+    private var fetchActivitiesTriggerSubject = PassthroughSubject<Void, Never>()
     private var cancelable = Set<AnyCancellable>()
+//<<<<<<< HEAD
+//=======
+    private var comp: SomeComponent!
+    private var activityDataStore: ActivityDataStoreProtocol!
+//>>>>>>> b7fb366d4 (Add create activity service)
 
     var activitiesPublisher: AnyPublisher<[ActivitiesViewModel.MappedToDateActivityOrTransaction], Never> {
         activitiesSubject.eraseToAnyPublisher()
@@ -67,7 +86,7 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
         eventsActivityDataStore: EventsActivityDataStoreProtocol,
         eventsDataStore: NonActivityEventsDataStore,
         transactionDataStore: TransactionDataStore,
-        activitiesFilterStrategy: ActivitiesFilterStrategy = .none,
+        activitiesFilterStrategy: ActivitiesFilterStrategy = .noFilter,
         transactionsFilterStrategy: TransactionsFilterStrategy = .all,
         tokensDataStore: TokensDataStore
     ) {
@@ -83,116 +102,274 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
         super.init()
     }
 
-    func start() {
-        let transactionsChangeset = transactionDataStore
+//<<<<<<< HEAD
+//    func start() {
+//        let transactionsChangeset = transactionDataStore
+//            .transactionsChangeset(forFilter: transactionsFilterStrategy, servers: config.enabledServers)
+//            .map { _ in }
+//            .eraseToAnyPublisher()
+//=======
+    private var flag = true
+//>>>>>>> fac3ac014 (Add create activity service)
+
+    func kk () {
+        guard flag else { return }
+        flag = false
+        activityDataStore = ActivityDataStore(realm: tokensDataStore.realm)
+        let activityObjectFactory: ActivityObjectFactory = .init(sessions: sessions, tokensDataStore: tokensDataStore)
+
+        comp = SomeComponent(transactionDataStore: transactionDataStore, activityDataStore: activityDataStore, eventsActivityDataStore: eventsActivityDataStore, activityObjectFactory: activityObjectFactory, eventsDataStore: eventsDataStore, tokensDataStore: tokensDataStore, assetDefinitionStore: assetDefinitionStore, config: config, wallet: wallet)
+        comp.handleActivitiesFromEvents(forTransactionsFilterStrategy: transactionsFilterStrategy)
+        comp.handleUpdateActivitiesForTokenHandlerAttribuesChange()
+
+//<<<<<<< HEAD
+//        Publishers.Merge(transactionsChangeset, eventsActivity)
+//            .sink { [weak self] _ in
+//                self?.createActivities(reloadImmediately: true)
+//=======
+        let transactions = transactionDataStore
             .transactionsChangeset(forFilter: transactionsFilterStrategy, servers: config.enabledServers)
-            .mapToVoid()
-            .eraseToAnyPublisher()
-
-        let eventsActivity = eventsActivityDataStore
-            .recentEventsChangeset
-            .mapToVoid()
-            .eraseToAnyPublisher()
-
-        Publishers.Merge(transactionsChangeset, eventsActivity)
-            .sink { [weak self] _ in self?.createActivities() }
-            .store(in: &cancelable)
-    }
-
-    func copy(activitiesFilterStrategy: ActivitiesFilterStrategy, transactionsFilterStrategy: TransactionsFilterStrategy) -> ActivitiesServiceType {
-        return ActivitiesService(config: config, sessions: sessions, assetDefinitionStore: assetDefinitionStore, eventsActivityDataStore: eventsActivityDataStore, eventsDataStore: eventsDataStore, transactionDataStore: transactionDataStore, activitiesFilterStrategy: activitiesFilterStrategy, transactionsFilterStrategy: transactionsFilterStrategy, tokensDataStore: tokensDataStore)
-    }
-
-    private func getTokensAndXmlHandlers(forTokens tokens: [Token]) -> TokenObjectsAndXMLHandlers {
-        return tokens.compactMap { each in
-            let xmlHandler = XMLHandler(token: each, assetDefinitionStore: self.assetDefinitionStore)
-            guard xmlHandler.hasAssetDefinition else { return nil }
-            guard xmlHandler.server?.matches(server: each.server) ?? false else { return nil }
-
-            return (contract: each.contractAddress, server: each.server, xmlHandler: xmlHandler)
-        }
-    }
-
-    private func getContractsAndCards(contractServerXmlHandlers: ActivitiesService.TokenObjectsAndXMLHandlers) -> ContractsAndCards {
-        let contractsAndCardsOptional: [ContractsAndCards] = contractServerXmlHandlers.compactMap { eachContract, _, xmlHandler in
-            var contractAndCard: ContractsAndCards = .init()
-            for card in xmlHandler.activityCards {
-                let (filterName, filterValue) = card.eventOrigin.eventFilter
-                let interpolatedFilter: String
-                if let implicitAttribute = EventSourceCoordinator.functional.convertToImplicitAttribute(string: filterValue) {
-                    switch implicitAttribute {
-                    case .tokenId:
-                        continue
-                    case .ownerAddress:
-                        interpolatedFilter = "\(filterName)=\(self.wallet.address.eip55String)"
-                    case .label, .contractAddress, .symbol:
-                        //TODO support more?
-                        continue
-                    }
-                } else {
-                    //TODO support things like "$prefix-{tokenId}"
-                    continue
-                }
-
-                guard let server = xmlHandler.server else { continue }
-                switch server {
-                case .any:
-                    for each in config.enabledServers {
-                        contractAndCard.append((tokenContract: eachContract, server: each, card: card, interpolatedFilter: interpolatedFilter))
-                    }
-                case .server(let server):
-                    contractAndCard.append((tokenContract: eachContract, server: server, card: card, interpolatedFilter: interpolatedFilter))
+//<<<<<<< HEAD
+//            .mapToVoid()
+//            .eraseToAnyPublisher()
+//
+//        let eventsActivity = eventsActivityDataStore
+//            .recentEventsChangeset
+//            .mapToVoid()
+//            .eraseToAnyPublisher()
+//
+//        Publishers.Merge(transactionsChangeset, eventsActivity)
+//            .sink { [weak self] _ in self?.createActivities() }
+//            .store(in: &cancelable)
+//    }
+//
+//    func copy(activitiesFilterStrategy: ActivitiesFilterStrategy, transactionsFilterStrategy: TransactionsFilterStrategy) -> ActivitiesServiceType {
+//        return ActivitiesService(config: config, sessions: sessions, assetDefinitionStore: assetDefinitionStore, eventsActivityDataStore: eventsActivityDataStore, eventsDataStore: eventsDataStore, transactionDataStore: transactionDataStore, activitiesFilterStrategy: activitiesFilterStrategy, transactionsFilterStrategy: transactionsFilterStrategy, tokensDataStore: tokensDataStore)
+//    }
+//
+//    private func getTokensAndXmlHandlers(forTokens tokens: [Token]) -> TokenObjectsAndXMLHandlers {
+//        return tokens.compactMap { each in
+//            let xmlHandler = XMLHandler(token: each, assetDefinitionStore: self.assetDefinitionStore)
+//            guard xmlHandler.hasAssetDefinition else { return nil }
+//            guard xmlHandler.server?.matches(server: each.server) ?? false else { return nil }
+//
+//            return (contract: each.contractAddress, server: each.server, xmlHandler: xmlHandler)
+//        }
+//    }
+//
+//    private func getContractsAndCards(contractServerXmlHandlers: ActivitiesService.TokenObjectsAndXMLHandlers) -> ContractsAndCards {
+//        let contractsAndCardsOptional: [ContractsAndCards] = contractServerXmlHandlers.compactMap { eachContract, _, xmlHandler in
+//            var contractAndCard: ContractsAndCards = .init()
+//            for card in xmlHandler.activityCards {
+//                let (filterName, filterValue) = card.eventOrigin.eventFilter
+//                let interpolatedFilter: String
+//                if let implicitAttribute = EventSourceCoordinator.functional.convertToImplicitAttribute(string: filterValue) {
+//                    switch implicitAttribute {
+//                    case .tokenId:
+//                        continue
+//                    case .ownerAddress:
+//                        interpolatedFilter = "\(filterName)=\(self.wallet.address.eip55String)"
+//                    case .label, .contractAddress, .symbol:
+//                        //TODO support more?
+//                        continue
+//                    }
+//                } else {
+//                    //TODO support things like "$prefix-{tokenId}"
+//                    continue
+//=======
+            .map { changeset -> [TransactionInstance] in
+                switch changeset {
+                case .initial(let transactions): return transactions
+                case .update(let transactions, _, _, _): return transactions
+                case .error: return []
+//>>>>>>> b7fb366d4 (Add create activity service)
                 }
             }
-            return contractAndCard
-        }
-        return contractsAndCardsOptional.flatMap { $0 }
+            .breakpoint(receiveOutput: { _ in
+                print("XXX: transactions")
+                return false
+            })
+
+        let activities = activityDataStore
+            .activitiesChangeset(strategy: activitiesFilterStrategy)
+            .map { change -> [Activity] in
+                switch change {
+                case .initial(let activities): return activities
+                case .update(let activities, _, _, _): return activities
+                case .error: return []
+                }
+            }
+            .breakpoint(receiveOutput: { _ in
+                print("XXX: activities")
+                return false
+            })
+
+        fetchActivitiesTriggerSubject
+            .breakpoint(receiveOutput: { _ in
+                print("XXX: trigger")
+                return false
+            })
+            .combineLatest(activities, transactions)
+            .receive(on: Config.backgroundQueue)
+            .map { (_, activities, transactions) -> (activities: [Activity], [Int: [ActivityOrTransactionInstance]]) in
+                print("XXX: merge \(activities.count) activities and \(transactions.count) transactions")
+                //FIXME: -
+                //self.activities = activities
+
+                let all: [ActivityOrTransactionInstance] = activities.map { .activity($0) } + transactions.map { .transaction($0) }
+                let sortedAll: [ActivityOrTransactionInstance] = all.sorted { $0.blockNumber < $1.blockNumber }
+                return (activities, Dictionary(grouping: sortedAll, by: \.blockNumber))
+            }
+            .map({ (activities, counters) -> [ActivityRowModel] in
+                print("XXX: generateRowModels and sort")
+                return counters
+                    .map { self.generateRowModels(fromActivityOrTransactions: $0.value, activities: activities, withBlockNumber: $0.key) }
+                    .flatMap { $0 }
+            })
+            .breakpoint(receiveOutput: { _ in
+                print("XXX: before sorted")
+                return false
+            })
+            .map { ActivitiesViewModel.sorted(activities: $0) }
+            .receive(on: RunLoop.main)
+            .sink { activities in
+                print("XXX: all notify with \(activities.count) activities")
+                print("XXX: ------------------------------------------------")
+//                self.viewModelSubject.send(.init(activities: activities))
+                self.activitiesSubject.send(activities)
+//>>>>>>> fac3ac014 (Add create activity service)
+            }.store(in: &cancelable)
+    }
+    
+    func fetch() {
+        fetchActivitiesTriggerSubject.send()
     }
 
-    private func getTokensForActivities() -> [Token] {
-        switch transactionsFilterStrategy {
-        case .all:
-            return tokensDataStore.enabledTokens(for: config.enabledServers)
-        case .filter(_, let token):
-            return [token]
-        case .predicate:
-            //NOTE: not supported here
-            return []
+//<<<<<<< HEAD
+//    private func createActivities() {
+//        let tokens = getTokensForActivities()
+//        let tokensAndXmlHandlers = getTokensAndXmlHandlers(forTokens: tokens)
+//        let contractsAndCards = getContractsAndCards(contractServerXmlHandlers: tokensAndXmlHandlers)
+//        let activitiesAndTokens = getActivitiesAndTokens(contractsAndCards: contractsAndCards)
+//
+//        activities.set(array: activitiesAndTokens.compactMap { $0.activity }.sorted { $0.blockNumber > $1.blockNumber })
+//        updateActivitiesIndexLookup(with: activities.array)
+//
+//        reloadViewController(reloadImmediately: true)
+//
+//        for (activity, token, tokenHolder) in activitiesAndTokens {
+//            refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity)
+//        }
+//=======
+    func copy(activitiesFilterStrategy: ActivitiesFilterStrategy, transactionsFilterStrategy: TransactionsFilterStrategy) -> ActivitiesServiceType {
+        return ActivitiesService(config: config, sessions: sessions, assetDefinitionStore: assetDefinitionStore, eventsActivityDataStore: eventsActivityDataStore, eventsDataStore: eventsDataStore, transactionDataStore: transactionDataStore, activitiesFilterStrategy: activitiesFilterStrategy, transactionsFilterStrategy: transactionsFilterStrategy, tokensDataStore: tokensDataStore)
+//>>>>>>> b7fb366d4 (Add create activity service)
+    }
+
+//<<<<<<< HEAD
+//    private func getTokensAndXmlHandlers(forTokens tokens: [Token]) -> TokenObjectsAndXMLHandlers {
+//        return tokens.compactMap { each in
+//            let xmlHandler = XMLHandler(token: each, assetDefinitionStore: self.assetDefinitionStore)
+//            guard xmlHandler.hasAssetDefinition else { return nil }
+//            guard xmlHandler.server?.matches(server: each.server) ?? false else { return nil }
+//
+//            return (contract: each.contractAddress, server: each.server, xmlHandler: xmlHandler)
+//        }
+//    }
+//
+//    private func getContractsAndCards(contractServerXmlHandlers: ActivitiesService.TokenObjectsAndXMLHandlers) -> ContractsAndCards {
+//        let contractsAndCardsOptional: [ContractsAndCards] = contractServerXmlHandlers.compactMap { eachContract, _, xmlHandler in
+//            var contractAndCard: ContractsAndCards = .init()
+//            for card in xmlHandler.activityCards {
+//                let (filterName, filterValue) = card.eventOrigin.eventFilter
+//                let interpolatedFilter: String
+//                if let implicitAttribute = EventSourceCoordinator.functional.convertToImplicitAttribute(string: filterValue) {
+//                    switch implicitAttribute {
+//                    case .tokenId:
+//                        continue
+//                    case .ownerAddress:
+//                        interpolatedFilter = "\(filterName)=\(self.wallet.address.eip55String)"
+//                    case .label, .contractAddress, .symbol:
+//                        //TODO support more?
+//                        continue
+//                    }
+//                } else {
+//                    //TODO support things like "$prefix-{tokenId}"
+//                    continue
+//                }
+//
+//                guard let server = xmlHandler.server else { continue }
+//                switch server {
+//                case .any:
+//                    for each in config.enabledServers {
+//                        contractAndCard.append((tokenContract: eachContract, server: each, card: card, interpolatedFilter: interpolatedFilter))
+//                    }
+//                case .server(let server):
+//                    contractAndCard.append((tokenContract: eachContract, server: server, card: card, interpolatedFilter: interpolatedFilter))
+//                }
+//            }
+//            return contractAndCard
+//        }
+//        return contractsAndCardsOptional.flatMap { $0 }
+//    }
+//
+//    private func getTokensForActivities() -> [Token] {
+//        switch transactionsFilterStrategy {
+//        case .all:
+//            return tokensDataStore.enabledTokens(for: config.enabledServers)
+//        case .filter(_, let token):
+//            return [token]
+//        case .predicate:
+//            //NOTE: not supported here
+//            return []
+//        }
+//    }
+//
+//    private func createActivities(reloadImmediately: Bool) {
+//        let tokens = getTokensForActivities()
+//        let tokensAndXmlHandlers = getTokensAndXmlHandlers(forTokens: tokens)
+//        let contractsAndCards = getContractsAndCards(contractServerXmlHandlers: tokensAndXmlHandlers)
+//        let activitiesAndTokens = getActivitiesAndTokens(contractsAndCards: contractsAndCards)
+//
+//        threadSafe.performSync { [weak self] in
+//            self?.activities = activitiesAndTokens.compactMap { $0.activity }
+//            self?.activities.sort { $0.blockNumber > $1.blockNumber }
+//
+//            self?.updateActivitiesIndexLookup()
+//        }
+//
+//        reloadViewController(reloadImmediately: reloadImmediately)
+//
+//        for (activity, token, tokenHolder) in activitiesAndTokens {
+//            refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity)
+//        }
+//    }
+//
+//    private func getActivitiesAndTokens(contractsAndCards: ContractsAndCards) -> [ActivitiesService.ActivityTokenObjectTokenHolder] {
+//        var activitiesAndTokens: [ActivityTokenObjectTokenHolder] = .init()
+//        //NOTE: here is a lot of calculations, `contractsAndCards` could reach up of 1000 items, as well as recentEvents could reach 1000.Simply it call inner function 1 000 000 times
+//        for (eachContract, eachServer, card, interpolatedFilter) in contractsAndCards {
+//            let activities = getActivities(forTokenContract: eachContract, server: eachServer, card: card, interpolatedFilter: interpolatedFilter)
+//            //NOTE: filter activities to avoid: `Fatal error: Duplicate values for key: '<id>'`
+//            let filteredActivities = activities.filter { data in !activitiesAndTokens.contains(where: { $0.activity.id == data.activity.id }) }
+//            activitiesAndTokens.append(contentsOf: filteredActivities)
+//        }
+//
+//        return Self.filter(activities: activitiesAndTokens, strategy: activitiesFilterStrategy)
+//    }
+//
+//=======
+    func stop() {
+        //TODO seems not good to stop here because others call stop too
+        for each in sessions.values {
+            each.stop()
         }
     }
 
-    private func createActivities() {
-        let tokens = getTokensForActivities()
-        let tokensAndXmlHandlers = getTokensAndXmlHandlers(forTokens: tokens)
-        let contractsAndCards = getContractsAndCards(contractServerXmlHandlers: tokensAndXmlHandlers)
-        let activitiesAndTokens = getActivitiesAndTokens(contractsAndCards: contractsAndCards)
-
-        activities.set(array: activitiesAndTokens.compactMap { $0.activity }.sorted { $0.blockNumber > $1.blockNumber })
-        updateActivitiesIndexLookup(with: activities.array)
-
-        reloadViewController(reloadImmediately: true)
-
-        for (activity, token, tokenHolder) in activitiesAndTokens {
-            refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity)
-        }
-    }
-
-    private func getActivitiesAndTokens(contractsAndCards: ContractsAndCards) -> [ActivitiesService.ActivityTokenObjectTokenHolder] {
-        var activitiesAndTokens: [ActivityTokenObjectTokenHolder] = .init()
-        //NOTE: here is a lot of calculations, `contractsAndCards` could reach up of 1000 items, as well as recentEvents could reach 1000.Simply it call inner function 1 000 000 times
-        for (eachContract, eachServer, card, interpolatedFilter) in contractsAndCards {
-            let activities = getActivities(forTokenContract: eachContract, server: eachServer, card: card, interpolatedFilter: interpolatedFilter)
-            //NOTE: filter activities to avoid: `Fatal error: Duplicate values for key: '<id>'`
-            let filteredActivities = activities.filter { data in !activitiesAndTokens.contains(where: { $0.activity.id == data.activity.id }) }
-            activitiesAndTokens.append(contentsOf: filteredActivities)
-        }
-
-        return Self.filter(activities: activitiesAndTokens, strategy: activitiesFilterStrategy)
-    }
-
+//>>>>>>> fac3ac014 (Add create activity service)
     private static func filter(activities filteredActivitiesForThisCard: [ActivitiesService.ActivityTokenObjectTokenHolder], strategy: ActivitiesFilterStrategy) -> [ActivitiesService.ActivityTokenObjectTokenHolder] {
         switch strategy {
-        case .none:
+        case .noFilter:
             return filteredActivitiesForThisCard
         case .contract(let contract), .operationTypes(_, let contract):
             return filteredActivitiesForThisCard.filter { mapped -> Bool in
@@ -205,107 +382,211 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
         }
     }
 
-    private func getActivities(forTokenContract contract: AlphaWallet.Address, server: RPCServer, card: TokenScriptCard, interpolatedFilter: String) -> [ActivityTokenObjectTokenHolder] {
-        //NOTE: eventsActivityDataStore. getRecentEvents() returns only 100 events, that could cause error with creating activities (missing events)
-        //replace with fetching only filtered event instances,
-        let events = eventsActivityDataStore.getRecentEventsSortedByBlockNumber(for: card.eventOrigin.contract, server: server, eventName: card.eventOrigin.eventName, interpolatedFilter: interpolatedFilter)
-
-        let activitiesForThisCard: [ActivityTokenObjectTokenHolder] = events.compactMap { eachEvent in
-            guard let token = tokensDataStore.token(forContract: contract, server: server) else { return nil }
-
-            let implicitAttributes = generateImplicitAttributesForToken(forContract: contract, server: server, symbol: token.symbol)
-            let tokenAttributes = implicitAttributes
-            var cardAttributes = Self.functional.generateImplicitAttributesForCard(forContract: contract, server: server, event: eachEvent)
-            cardAttributes.merge(eachEvent.data) { _, new in new }
-
-            for parameter in card.eventOrigin.parameters {
-                guard let originalValue = cardAttributes[parameter.name] else { continue }
-                guard let type = SolidityType(rawValue: parameter.type) else { continue }
-                let translatedValue = type.coerce(value: originalValue)
-                cardAttributes[parameter.name] = translatedValue
-            }
-
-            let tokenHolders: [TokenHolder]
-
-            if let h = tokensAndTokenHolders[token.addressAndRPCServer] {
-                tokenHolders = h
-            } else {
-                if token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase) {
-                    let _token = TokenScript.Token(tokenIdOrEvent: .tokenId(tokenId: .init(1)), tokenType: .nativeCryptocurrency, index: 0, name: "", symbol: "", status: .available, values: .init())
-
-                    tokenHolders = [TokenHolder(tokens: [_token], contractAddress: token.contractAddress, hasAssetDefinition: true)]
-                } else {
-                    tokenHolders = token.getTokenHolders(assetDefinitionStore: assetDefinitionStore, eventsDataStore: eventsDataStore, forWallet: wallet)
-                }
-                tokensAndTokenHolders[token.addressAndRPCServer] = tokenHolders
-            }
-            //NOTE: using `tokenHolders[0]` i received crash with out of range exception
-            guard let tokenHolder = tokenHolders.first else { return nil }
-            //TODO fix for activities: special fix to filter out the event we don't want - need to doc this and have to handle with TokenScript design
-            let isNativeCryptoAddress = token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase)
-            if card.name == "aETHMinted" && isNativeCryptoAddress && cardAttributes["amount"]?.uintValue == 0 {
-                return nil
-            } else {
-                //no-op
-            }
-
-            let activity = Activity(id: Int.random(in: 0..<Int.max), rowType: .standalone, token: token, server: eachEvent.server, name: card.name, eventName: eachEvent.eventName, blockNumber: eachEvent.blockNumber, transactionId: eachEvent.transactionId, transactionIndex: eachEvent.transactionIndex, logIndex: eachEvent.logIndex, date: eachEvent.date, values: (token: tokenAttributes, card: cardAttributes), view: card.view, itemView: card.itemView, isBaseCard: card.isBase, state: .completed)
-
-            return (activity: activity, tokenObject: token, tokenHolder: tokenHolder)
-        }
-
-        return activitiesForThisCard
-    }
-
-    private func reloadViewController(reloadImmediately: Bool) {
-        if reloadImmediately {
-            combineActivitiesWithTransactions()
-        } else {
-            //We want to show the activities tab immediately the first time activities are available, otherwise when the app launch and user goes to the tab immediately and wait for a few seconds, they'll see some of the transactions transforming into activities. Very jarring
-            if hasLoadedActivitiesTheFirstTime {
-                if rateLimitedViewControllerReloader == nil {
-                    rateLimitedViewControllerReloader = RateLimiter(name: "Reload activity/transactions in Activity tab", limit: 5, autoRun: true) { [weak self] in
-                        self?.combineActivitiesWithTransactions()
-                    }
-                } else {
-                    rateLimitedViewControllerReloader?.run()
-                }
-            } else {
-                combineActivitiesWithTransactions()
-            }
-        }
-    }
-
+//<<<<<<< HEAD
+//    private func getActivities(forTokenContract contract: AlphaWallet.Address, server: RPCServer, card: TokenScriptCard, interpolatedFilter: String) -> [ActivityTokenObjectTokenHolder] {
+//        //NOTE: eventsActivityDataStore. getRecentEvents() returns only 100 events, that could cause error with creating activities (missing events)
+//        //replace with fetching only filtered event instances,
+//        let events = eventsActivityDataStore.getRecentEventsSortedByBlockNumber(for: card.eventOrigin.contract, server: server, eventName: card.eventOrigin.eventName, interpolatedFilter: interpolatedFilter)
+//
+//        let activitiesForThisCard: [ActivityTokenObjectTokenHolder] = events.compactMap { eachEvent in
+//            guard let token = tokensDataStore.token(forContract: contract, server: server) else { return nil }
+//
+//            let implicitAttributes = generateImplicitAttributesForToken(forContract: contract, server: server, symbol: token.symbol)
+//            let tokenAttributes = implicitAttributes
+//            var cardAttributes = Self.functional.generateImplicitAttributesForCard(forContract: contract, server: server, event: eachEvent)
+//            cardAttributes.merge(eachEvent.data) { _, new in new }
+//
+//            for parameter in card.eventOrigin.parameters {
+//                guard let originalValue = cardAttributes[parameter.name] else { continue }
+//                guard let type = SolidityType(rawValue: parameter.type) else { continue }
+//                let translatedValue = type.coerce(value: originalValue)
+//                cardAttributes[parameter.name] = translatedValue
+//            }
+//
+//            let tokenHolders: [TokenHolder]
+//
+//            if let h = tokensAndTokenHolders[token.addressAndRPCServer] {
+//                tokenHolders = h
+//            } else {
+//                if token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase) {
+//                    let _token = TokenScript.Token(tokenIdOrEvent: .tokenId(tokenId: .init(1)), tokenType: .nativeCryptocurrency, index: 0, name: "", symbol: "", status: .available, values: .init())
+//
+//                    tokenHolders = [TokenHolder(tokens: [_token], contractAddress: token.contractAddress, hasAssetDefinition: true)]
+//                } else {
+//                    tokenHolders = token.getTokenHolders(assetDefinitionStore: assetDefinitionStore, eventsDataStore: eventsDataStore, forWallet: wallet)
+//                }
+//                tokensAndTokenHolders[token.addressAndRPCServer] = tokenHolders
+//            }
+//            //NOTE: using `tokenHolders[0]` i received crash with out of range exception
+//            guard let tokenHolder = tokenHolders.first else { return nil }
+//            //TODO fix for activities: special fix to filter out the event we don't want - need to doc this and have to handle with TokenScript design
+//            let isNativeCryptoAddress = token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase)
+//            if card.name == "aETHMinted" && isNativeCryptoAddress && cardAttributes["amount"]?.uintValue == 0 {
+//                return nil
+//            } else {
+//                //no-op
+//            }
+//
+//            let activity = Activity(id: Int.random(in: 0..<Int.max), rowType: .standalone, token: token, server: eachEvent.server, name: card.name, eventName: eachEvent.eventName, blockNumber: eachEvent.blockNumber, transactionId: eachEvent.transactionId, transactionIndex: eachEvent.transactionIndex, logIndex: eachEvent.logIndex, date: eachEvent.date, values: (token: tokenAttributes, card: cardAttributes), view: card.view, itemView: card.itemView, isBaseCard: card.isBase, state: .completed)
+//
+//            return (activity: activity, tokenObject: token, tokenHolder: tokenHolder)
+//        }
+//
+//        return activitiesForThisCard
+//    }
+//
+//    private func reloadViewController(reloadImmediately: Bool) {
+//        if reloadImmediately {
+//            combineActivitiesWithTransactions()
+//        } else {
+//            //We want to show the activities tab immediately the first time activities are available, otherwise when the app launch and user goes to the tab immediately and wait for a few seconds, they'll see some of the transactions transforming into activities. Very jarring
+//            if hasLoadedActivitiesTheFirstTime {
+//                if rateLimitedViewControllerReloader == nil {
+//                    rateLimitedViewControllerReloader = RateLimiter(name: "Reload activity/transactions in Activity tab", limit: 5, autoRun: true) { [weak self] in
+//                        self?.combineActivitiesWithTransactions()
+//                    }
+//                } else {
+//                    rateLimitedViewControllerReloader?.run()
+//                }
+//            } else {
+//                combineActivitiesWithTransactions()
+//            }
+//        }
+//    }
+//
+//    func reinject(activity: Activity) {
+//        guard let tokenHolders = tokensAndTokenHolders[activity.token.addressAndRPCServer] else { return }
+//
+//        refreshActivity(token: activity.token, tokenHolder: tokenHolders[0], activity: activity, isFirstUpdate: true)
+//    }
+//
+//    private func combineActivitiesWithTransactions() {
+//        if !activities.isEmpty {
+//            hasLoadedActivitiesTheFirstTime = true
+//        }
+//
+//        let transactions = transactionDataStore.transactions(forFilter: transactionsFilterStrategy, servers: config.enabledServers, oldestBlockNumber: activities.array.last?.blockNumber)
+//        let items = combine(activities: activities.array, with: transactions)
+//        let activities = ActivitiesViewModel.sorted(activities: items)
+//
+//        activitiesSubject.send(activities)
+//    }
+//
+//    //Combining includes filtering around activities (from events) for ERC20 send/receive transactions which are already covered by transactions
+//    private func combine(activities: [Activity], with transactions: [TransactionInstance]) -> [ActivityRowModel] {
+//        let all: [ActivityOrTransactionInstance] = activities.map { .activity($0) } + transactions.map { .transaction($0) }
+//        let sortedAll: [ActivityOrTransactionInstance] = all.sorted { $0.blockNumber < $1.blockNumber }
+//        let counters = Dictionary(grouping: sortedAll, by: \.blockNumber)
+//=======
+//<<<<<<< HEAD
+//    private func getActivities(forTokenContract contract: AlphaWallet.Address, server: RPCServer, card: TokenScriptCard, interpolatedFilter: String) -> [ActivityTokenObjectTokenHolder] {
+//        //NOTE: eventsActivityDataStore. getRecentEvents() returns only 100 events, that could cause error with creating activities (missing events)
+//        //replace with fetching only filtered event instances,
+//        let events = eventsActivityDataStore.getRecentEventsSortedByBlockNumber(for: card.eventOrigin.contract, server: server, eventName: card.eventOrigin.eventName, interpolatedFilter: interpolatedFilter)
+//
+//        let activitiesForThisCard: [ActivityTokenObjectTokenHolder] = events.compactMap { eachEvent in
+//            guard let token = tokensDataStore.token(forContract: contract, server: server) else { return nil }
+//
+//            let implicitAttributes = generateImplicitAttributesForToken(forContract: contract, server: server, symbol: token.symbol)
+//            let tokenAttributes = implicitAttributes
+//            var cardAttributes = Self.functional.generateImplicitAttributesForCard(forContract: contract, server: server, event: eachEvent)
+//            cardAttributes.merge(eachEvent.data) { _, new in new }
+//
+//            for parameter in card.eventOrigin.parameters {
+//                guard let originalValue = cardAttributes[parameter.name] else { continue }
+//                guard let type = SolidityType(rawValue: parameter.type) else { continue }
+//                let translatedValue = type.coerce(value: originalValue)
+//                cardAttributes[parameter.name] = translatedValue
+//            }
+//
+//            let tokenHolders: [TokenHolder]
+//
+//            if let h = tokensAndTokenHolders[token.addressAndRPCServer] {
+//                tokenHolders = h
+//            } else {
+//                if token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase) {
+//                    let _token = TokenScript.Token(tokenIdOrEvent: .tokenId(tokenId: .init(1)), tokenType: .nativeCryptocurrency, index: 0, name: "", symbol: "", status: .available, values: .init())
+//
+//                    tokenHolders = [TokenHolder(tokens: [_token], contractAddress: token.contractAddress, hasAssetDefinition: true)]
+//                } else {
+//                    tokenHolders = token.getTokenHolders(assetDefinitionStore: assetDefinitionStore, eventsDataStore: eventsDataStore, forWallet: wallet)
+//                }
+//                tokensAndTokenHolders[token.addressAndRPCServer] = tokenHolders
+//            }
+//            //NOTE: using `tokenHolders[0]` i received crash with out of range exception
+//            guard let tokenHolder = tokenHolders.first else { return nil }
+//            //TODO fix for activities: special fix to filter out the event we don't want - need to doc this and have to handle with TokenScript design
+//            let isNativeCryptoAddress = token.contractAddress.sameContract(as: Constants.nativeCryptoAddressInDatabase)
+//            if card.name == "aETHMinted" && isNativeCryptoAddress && cardAttributes["amount"]?.uintValue == 0 {
+//                return nil
+//            } else {
+//                //no-op
+//            }
+//
+//            let activity = Activity(id: Int.random(in: 0..<Int.max), rowType: .standalone, token: token, server: eachEvent.server, name: card.name, eventName: eachEvent.eventName, blockNumber: eachEvent.blockNumber, transactionId: eachEvent.transactionId, transactionIndex: eachEvent.transactionIndex, logIndex: eachEvent.logIndex, date: eachEvent.date, values: (token: tokenAttributes, card: cardAttributes), view: card.view, itemView: card.itemView, isBaseCard: card.isBase, state: .completed)
+//
+//            return (activity: activity, tokenObject: token, tokenHolder: tokenHolder)
+//        }
+//
+//        return activitiesForThisCard
+//    }
+//
+//    private func reloadViewController(reloadImmediately: Bool) {
+//        if reloadImmediately {
+//            reloadViewControllerImpl()
+//        } else {
+//            //We want to show the activities tab immediately the first time activities are available, otherwise when the app launch and user goes to the tab immediately and wait for a few seconds, they'll see some of the transactions transforming into activities. Very jarring
+//            if hasLoadedActivitiesTheFirstTime {
+//                if rateLimitedViewControllerReloader == nil {
+//                    rateLimitedViewControllerReloader = RateLimiter(name: "Reload activity/transactions in Activity tab", limit: 5, autoRun: true) { [weak self] in
+//                        self?.reloadViewControllerImpl()
+//                    }
+//                } else {
+//                    rateLimitedViewControllerReloader?.run()
+//                }
+//            } else {
+//                reloadViewControllerImpl()
+//            }
+//        }
+//    }
+//
+//=======
+//>>>>>>> fac3ac014 (Add create activity service)
     func reinject(activity: Activity) {
-        guard let tokenHolders = tokensAndTokenHolders[activity.token.addressAndRPCServer] else { return }
+//        guard let (token, tokenHolder) = tokensAndTokenHolders[activity.tokenObject.contractAddress] else { return }
+//>>>>>>> b7fb366d4 (Add create activity service)
 
-        refreshActivity(token: activity.token, tokenHolder: tokenHolders[0], activity: activity, isFirstUpdate: true)
+//        refreshActivity(tokenObject: token, tokenHolder: tokenHolder[0], activity: activity, isFirstUpdate: true)
     }
 
-    private func combineActivitiesWithTransactions() {
-        if !activities.isEmpty {
-            hasLoadedActivitiesTheFirstTime = true
-        }
-
-        let transactions = transactionDataStore.transactions(forFilter: transactionsFilterStrategy, servers: config.enabledServers, oldestBlockNumber: activities.array.last?.blockNumber)
-        let items = combine(activities: activities.array, with: transactions)
-        let activities = ActivitiesViewModel.sorted(activities: items)
-
-        activitiesSubject.send(activities)
-    }
-
-    //Combining includes filtering around activities (from events) for ERC20 send/receive transactions which are already covered by transactions
-    private func combine(activities: [Activity], with transactions: [TransactionInstance]) -> [ActivityRowModel] {
-        let all: [ActivityOrTransactionInstance] = activities.map { .activity($0) } + transactions.map { .transaction($0) }
-        let sortedAll: [ActivityOrTransactionInstance] = all.sorted { $0.blockNumber < $1.blockNumber }
-        let counters = Dictionary(grouping: sortedAll, by: \.blockNumber)
-
-        return counters.map {
-            generateRowModels(fromActivityOrTransactions: $0.value, withBlockNumber: $0.key)
-        }.flatMap { $0 }
-    }
-
-    private func generateRowModels(fromActivityOrTransactions activityOrTransactions: [ActivityOrTransactionInstance], withBlockNumber blockNumber: Int) -> [ActivityRowModel] {
+//<<<<<<< HEAD
+//    private func reloadViewControllerImpl() {
+//        if !activities.isEmpty {
+//            hasLoadedActivitiesTheFirstTime = true
+//        }
+//
+//        let transactions = transactionDataStore.transactions(forFilter: transactionsFilterStrategy, servers: config.enabledServers, oldestBlockNumber: activities.last?.blockNumber)
+//        let items = combine(activities: activities, with: transactions)
+//        let activities = ActivitiesViewModel.sorted(activities: items)
+//
+//        activitiesSubject.send(activities)
+//    }
+//
+//    //Combining includes filtering around activities (from events) for ERC20 send/receive transactions which are already covered by transactions
+//    private func combine(activities: [Activity], with transactions: [TransactionInstance]) -> [ActivityRowModel] {
+//        let all: [ActivityOrTransactionInstance] = activities.map { .activity($0) } + transactions.map { .transaction($0) }
+//        let sortedAll: [ActivityOrTransactionInstance] = all.sorted { $0.blockNumber < $1.blockNumber }
+//        let counters = Dictionary(grouping: sortedAll, by: \.blockNumber)
+//
+//        return counters.map {
+//            generateRowModels(fromActivityOrTransactions: $0.value, withBlockNumber: $0.key)
+//        }.flatMap { $0 }
+//    }
+//
+//    private func generateRowModels(fromActivityOrTransactions activityOrTransactions: [ActivityOrTransactionInstance], withBlockNumber blockNumber: Int) -> [ActivityRowModel] {
+//=======
+    private func generateRowModels(fromActivityOrTransactions activityOrTransactions: [ActivityOrTransactionInstance], activities: [Activity], withBlockNumber blockNumber: Int) -> [ActivityRowModel] {
+//>>>>>>> fac3ac014 (Add create activity service)
         if activityOrTransactions.isEmpty {
             //Shouldn't be possible
             return .init()
@@ -377,30 +658,33 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
         return hasSend && hasReceive
     }
 
-    //Important to pass in the `TokenHolder` instance and not re-create so that we don't override the subscribable values for the token with ones that are not resolved yet
-    private func refreshActivity(token: Token, tokenHolder: TokenHolder, activity: Activity, isFirstUpdate: Bool = true) {
-        let attributeValues = AssetAttributeValues(attributeValues: tokenHolder.values)
-        let resolvedAttributeNameValues = attributeValues.resolve { [weak self, weak tokenHolder] _ in
-            guard let tokenHolder = tokenHolder, isFirstUpdate else { return }
-            self?.refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity, isFirstUpdate: false)
-        }
-
-        //NOTE: Fix crush when element with index out of range
-        if let (index, oldActivity) = activitiesIndexLookup[activity.id] {
-            let updatedValues = (token: oldActivity.values.token.merging(resolvedAttributeNameValues) { _, new in new }, card: oldActivity.values.card)
-            let updatedActivity: Activity = .init(id: oldActivity.id, rowType: oldActivity.rowType, token: token, server: oldActivity.server, name: oldActivity.name, eventName: oldActivity.eventName, blockNumber: oldActivity.blockNumber, transactionId: oldActivity.transactionId, transactionIndex: oldActivity.transactionIndex, logIndex: oldActivity.logIndex, date: oldActivity.date, values: updatedValues, view: oldActivity.view, itemView: oldActivity.itemView, isBaseCard: oldActivity.isBaseCard, state: oldActivity.state)
-
-            if activities.indices.contains(index) {
-                activities[index] = updatedActivity
-                reloadViewController(reloadImmediately: false)
-
-                didUpdateActivitySubject.send(updatedActivity)
-            }
-        } else {
-            //no-op. We should be able to find it unless the list of activities has changed
-        }
-    }
-
+//<<<<<<< HEAD
+//    //Important to pass in the `TokenHolder` instance and not re-create so that we don't override the subscribable values for the token with ones that are not resolved yet
+//    private func refreshActivity(token: Token, tokenHolder: TokenHolder, activity: Activity, isFirstUpdate: Bool = true) {
+//        let attributeValues = AssetAttributeValues(attributeValues: tokenHolder.values)
+//        let resolvedAttributeNameValues = attributeValues.resolve { [weak self, weak tokenHolder] _ in
+//            guard let tokenHolder = tokenHolder, isFirstUpdate else { return }
+//            self?.refreshActivity(token: token, tokenHolder: tokenHolder, activity: activity, isFirstUpdate: false)
+//        }
+//
+//        //NOTE: Fix crush when element with index out of range
+//        if let (index, oldActivity) = activitiesIndexLookup[activity.id] {
+//            let updatedValues = (token: oldActivity.values.token.merging(resolvedAttributeNameValues) { _, new in new }, card: oldActivity.values.card)
+//            let updatedActivity: Activity = .init(id: oldActivity.id, rowType: oldActivity.rowType, token: token, server: oldActivity.server, name: oldActivity.name, eventName: oldActivity.eventName, blockNumber: oldActivity.blockNumber, transactionId: oldActivity.transactionId, transactionIndex: oldActivity.transactionIndex, logIndex: oldActivity.logIndex, date: oldActivity.date, values: updatedValues, view: oldActivity.view, itemView: oldActivity.itemView, isBaseCard: oldActivity.isBaseCard, state: oldActivity.state)
+//
+//            if activities.indices.contains(index) {
+//                activities[index] = updatedActivity
+//                reloadViewController(reloadImmediately: false)
+//
+//                didUpdateActivitySubject.send(updatedActivity)
+//            }
+//        } else {
+//            //no-op. We should be able to find it unless the list of activities has changed
+//        }
+//    }
+//
+//=======
+//>>>>>>> b7fb366d4 (Add create activity service)
     private func generateImplicitAttributesForToken(forContract contract: AlphaWallet.Address, server: RPCServer, symbol: String) -> [String: AssetInternalValue] {
         var results = [String: AssetInternalValue]()
         for each in AssetImplicitAttributes.allCases {
@@ -423,16 +707,19 @@ class ActivitiesService: NSObject, ActivitiesServiceType {
         }
         return results
     }
-
-    //We can't run this in `activities` didSet {} because this will then be run unnecessarily, when we refresh each activity (we only want this to update when we refresh the entire activity list)
-    private func updateActivitiesIndexLookup(with activities: [Activity]) {
-        var arrayIndex = -1
-        let newValue: [Int: (index: Int, activity: Activity)] = Dictionary(uniqueKeysWithValues: activities.map {
-            arrayIndex += 1
-            return ($0.id, (arrayIndex, $0))
-        })
-        activitiesIndexLookup.set(value: newValue)
-    }
+//<<<<<<< HEAD
+//
+//    //We can't run this in `activities` didSet {} because this will then be run unnecessarily, when we refresh each activity (we only want this to update when we refresh the entire activity list)
+//    private func updateActivitiesIndexLookup(with activities: [Activity]) {
+//        var arrayIndex = -1
+//        let newValue: [Int: (index: Int, activity: Activity)] = Dictionary(uniqueKeysWithValues: activities.map {
+//            arrayIndex += 1
+//            return ($0.id, (arrayIndex, $0))
+//        })
+//        activitiesIndexLookup.set(value: newValue)
+//    }
+//=======
+//>>>>>>> b7fb366d4 (Add create activity service)
 }
 
 fileprivate func == (activity: Activity, operation: LocalizedOperationObjectInstance) -> Bool {

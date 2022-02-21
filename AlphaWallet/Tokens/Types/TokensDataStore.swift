@@ -15,7 +15,11 @@ enum DataStoreError: Error {
 
 /// Multiple-chains tokens data store
 protocol TokensDataStore: NSObjectProtocol {
+    var realm: Realm { get }
+    func tokenObject(forContract contract: AlphaWallet.Address, server: RPCServer) -> TokenObject?
+
     func enabledTokensChangeset(for servers: [RPCServer]) -> AnyPublisher<ChangeSet<[Token]>, Never>
+    func enabledTokensChangeset(for contract: AlphaWallet.Address, server: RPCServer) -> AnyPublisher<ChangeSet<[Token]>, Never>
     func enabledTokens(for servers: [RPCServer]) -> [Token]
     func tokenPublisher(for contract: AlphaWallet.Address, server: RPCServer) -> AnyPublisher<Token?, DataStoreError>
     func deletedContracts(forServer server: RPCServer) -> [AddressAndRPCServer]
@@ -177,6 +181,20 @@ enum NonFungibleBalance {
     }
 }
 
+extension TokensDataStore {
+    func tokensForActivitiesChangeset(forStrategy strategy: TransactionsFilterStrategy) -> AnyPublisher<ChangeSet<[Token]>, Never> {
+        switch strategy {
+        case .all:
+            return enabledTokensChangeset(for: Config().enabledServers)
+        case .filter(_, let token):
+            return enabledTokensChangeset(for: token.contractAddress, server: token.server)
+        case .predicate(let predicate):
+            fatalError()
+        }
+        //TODO: filter balance change events
+    }
+}
+
 enum TokenUpdateAction {
     case value(BigInt)
     case isDisabled(Bool)
@@ -190,9 +208,11 @@ enum TokenUpdateAction {
 
 class MultipleChainsTokensDataStore: NSObject, TokensDataStore {
     private let store: RealmStore
+    /*private*/ let realm: Realm
 
     init(store: RealmStore, servers: [RPCServer]) {
         self.store = store
+        self.realm = store.mainThreadRealm
         super.init()
 
         for each in servers {
@@ -271,8 +291,38 @@ class MultipleChainsTokensDataStore: NSObject, TokensDataStore {
         return tokensToReturn
     }
 
+    func enabledTokensChangeset(for contract: AlphaWallet.Address, server: RPCServer) -> AnyPublisher<ChangeSet<[Token]>, Never> {
+        let predicate = MultipleChainsTokensDataStore
+            .functional
+            .tokenPredicate(server: server, isDisabled: false, contract: contract)
+        var publisher: AnyPublisher<ChangeSet<[Token]>, Never>!
+
+        store.performSync { realm in
+            publisher = realm
+                .objects(TokenObject.self)
+                .filter(predicate)
+                .changesetPublisher
+                .map { change in
+                    switch change {
+                    case .initial(let tokenObjects):
+                        let tokens = Array(tokenObjects).map { Token(tokenObject: $0) }
+                        return .initial(tokens)
+                    case .update(let tokenObjects, let deletions, let insertions, let modifications):
+                        let tokens = Array(tokenObjects).map { Token(tokenObject: $0) }
+                        return .update(tokens, deletions: deletions, insertions: insertions, modifications: modifications)
+                    case .error(let error):
+                        return .error(error)
+                    }
+                }
+                .eraseToAnyPublisher()
+        }
+
+        return publisher
+    }
+
     func deletedContracts(forServer server: RPCServer) -> [AddressAndRPCServer] {
         var deletedContracts: [AddressAndRPCServer] = []
+
         store.performSync { realm in
             deletedContracts = Array(realm.objects(DeletedContract.self).filter("chainId = \(server.chainID)"))
                 .map { .init(address: $0.contractAddress, server: $0.server) }
@@ -369,6 +419,15 @@ class MultipleChainsTokensDataStore: NSObject, TokensDataStore {
                 .filter(predicate)
                 .first
                 .map { Token(tokenObject: $0) }
+        }
+
+        return token
+    }
+
+    func tokenObject(forContract contract: AlphaWallet.Address, server: RPCServer) -> TokenObject? {
+        var token: TokenObject?
+        store.performSync { realm in
+            token = self.tokenObject(forContract: contract, server: server, realm: realm)?.freeze()
         }
 
         return token

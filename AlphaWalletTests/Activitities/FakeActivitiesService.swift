@@ -4,6 +4,10 @@
 import Combine
 
 class FakeActivitiesService: ActivitiesServiceType {
+    func fetch() {
+        
+    }
+
     var sessions: ServerDictionary<WalletSession> { .make() }
     
     var activitiesPublisher: AnyPublisher<[ActivitiesViewModel.MappedToDateActivityOrTransaction], Never> {
@@ -18,4 +22,5 @@ class FakeActivitiesService: ActivitiesServiceType {
     func start() {}
     func reinject(activity: Activity) {}
     func copy(activitiesFilterStrategy: ActivitiesFilterStrategy, transactionsFilterStrategy: TransactionsFilterStrategy) -> ActivitiesServiceType { self }
+    
 }

@@ -8,7 +8,7 @@
 import Foundation
 
 enum ActivitiesFilterStrategy {
-    case none
+    case noFilter
     case nativeCryptocurrency(primaryKey: String)
     case contract(contract: AlphaWallet.Address)
     case operationTypes(operationTypes: [OperationType], contract: AlphaWallet.Address)
@@ -21,7 +21,7 @@ enum ActivitiesFilterStrategy {
             return ActivitiesFilterStrategy.functional.predicateForERC20TokenTransactions(contract: contract)
         case .operationTypes(let operationTypes, let contract):
             return ActivitiesFilterStrategy.functional.predicateForTransactionsForCustomOperations(operationTypes: operationTypes, contract: contract)
-        case .none:
+        case .noFilter:
             return NSPredicate(format: "")
         }
     }
@@ -45,7 +45,7 @@ extension TransactionType {
         case .erc721Token(let token, _), .erc721ForTicketToken(let token, _), .erc1155Token(let token, _, _):
             return .operationTypes(operationTypes: [], contract: token.contractAddress)
         case .dapp, .claimPaidErc875MagicLink, .tokenScript, .prebuilt:
-            return .none
+            return .noFilter
         }
     }
 }

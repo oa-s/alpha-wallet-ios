@@ -1,7 +1,8 @@
 // Copyright © 2020 Stormbird PTE. LTD.
 
 import Foundation
-import BigInt 
+import BigInt
+import RealmSwift
 
 struct Activity {
     enum NativeViewType {
@@ -18,12 +19,12 @@ struct Activity {
         case none
     }
 
-    enum State {
+    enum State: Int {
         case pending
         case completed
         case failed
     }
-
+    let primaryKey: String
     //We use the internal id to track which activity to replace/update
     let id: Int
     var rowType: ActivityRowType
@@ -48,6 +49,7 @@ struct Activity {
 
     init(id: Int, rowType: ActivityRowType, token: Token, server: RPCServer, name: String, eventName: String, blockNumber: Int, transactionId: String, transactionIndex: Int, logIndex: Int, date: Date, values: (token: [AttributeId: AssetInternalValue], card: [AttributeId: AssetInternalValue]), view: (html: String, style: String), itemView: (html: String, style: String), isBaseCard: Bool, state: State) {
         self.id = id
+        self.primaryKey = ActivityObject.generatePrimaryKey(eventName: eventName, blockNumber: blockNumber, transactionId: transactionId, transactionIndex: transactionIndex, logIndex: logIndex)
         self.token = token
         self.server = server
         self.name = name
@@ -63,6 +65,31 @@ struct Activity {
         self.isBaseCard = isBaseCard
         self.state = state
         self.rowType = rowType
+    }
+
+    init?(activityObject activity: ActivityObject) {
+        guard let token = activity.tokenObject.flatMap({ Token(tokenObject: $0) }) else {
+            print("XXX failure to create activity")
+            return nil
+        }
+        //print("XXX create activity")
+        self.primaryKey = activity.primaryKey
+        self.id = activity.id
+        self.token = token
+        self.server = RPCServer(chainID: activity.chainId)
+        self.name = activity.name
+        self.eventName = activity.eventName
+        self.blockNumber = activity.blockNumber
+        self.transactionId = activity.transactionId
+        self.transactionIndex = activity.transactionIndex
+        self.logIndex = activity.logIndex
+        self.date = Date(timeIntervalSince1970: activity.dateRawValue)
+        self.values = activity.values
+        self.view = activity.view
+        self.itemView = activity.itemView
+        self.isBaseCard = activity.isBaseCard
+        self.state = State(rawValue: activity.stateRawValue)!
+        self.rowType = ActivityRowType(rawValue: activity.rowTypeRawValue)!
     }
 
     var viewHtml: (html: String, hash: Int) {

@@ -188,7 +188,7 @@ class NFTCollectionViewController: UIViewController {
     }
 
     private func subscribeForActivities() {
-        activitiesService.start()
+//        activitiesService.start()
         activitiesService.activitiesPublisher
             .receive(on: RunLoop.main)
             .sink { [weak activitiesPageView] activities in

@@ -172,6 +172,7 @@ class TokensCoordinator: Coordinator {
         navigationController.viewControllers = [rootViewController]
 
         alertService.start()
+        print("XXX: tokens coordinator start")
     }
 
     deinit {
@@ -258,6 +259,7 @@ extension TokensCoordinator: TokensViewControllerDelegate {
         viewWillAppearHandled = true
 
         delegate?.viewWillAppearOnce(in: self)
+        activitiesService.kk()
     }
 
     private func makeMoreAlertSheet(sender: UIBarButtonItem) -> UIAlertController {

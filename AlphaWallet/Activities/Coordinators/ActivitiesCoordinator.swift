@@ -49,6 +49,10 @@ class ActivitiesCoordinator: NSObject, Coordinator {
         subscribeForActivitiesUpdates()
     }
 
+    func viewWillAppear(in viewController: ActivitiesViewController) {
+        activitiesService.fetch()
+    }
+
     private func makeActivitiesViewController() -> ActivitiesViewController {
         let viewModel = ActivitiesViewModel()
         let controller = ActivitiesViewController(analyticsCoordinator: analyticsCoordinator, keystore: keystore, wallet: wallet, viewModel: viewModel, sessions: sessions, assetDefinitionStore: assetDefinitionStore)

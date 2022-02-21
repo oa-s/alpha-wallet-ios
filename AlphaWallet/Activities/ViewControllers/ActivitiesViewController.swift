@@ -5,6 +5,7 @@ import BigInt
 import StatefulViewController
 
 protocol ActivitiesViewControllerDelegate: AnyObject {
+    func viewWillAppear(in viewController: ActivitiesViewController)
     func didPressActivity(activity: Activity, in viewController: ActivitiesViewController)
     func didPressTransaction(transaction: TransactionInstance, in viewController: ActivitiesViewController)
 }
@@ -56,6 +57,7 @@ class ActivitiesViewController: UIViewController {
 
         keyboardChecker.viewWillAppear()
         navigationItem.largeTitleDisplayMode = .always
+        delegate?.viewWillAppear(in: self)
     }
 
     override func viewDidAppear(_ animated: Bool) {

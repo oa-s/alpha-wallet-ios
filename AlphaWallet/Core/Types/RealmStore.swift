@@ -27,11 +27,11 @@ class RealmStore {
     }
     private let config: Realm.Configuration
     private let thread: RunLoopThread = .init()
-    private let mainThreadRealm: Realm
+
+    let mainThreadRealm: Realm
     //NOTE: Making it as lazy removes blocking main thread (when init method get called), and we sure that backgroundThreadRealm always get called in thread.performSync() { context
     private lazy var backgroundThreadRealm: Realm = {
         guard let realm = try? Realm(configuration: config) else { fatalError("Failure to resolve background realm") }
-
         return realm
     }()
 

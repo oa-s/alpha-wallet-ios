@@ -5,7 +5,11 @@ import AlphaWalletOpenSea
 import BigInt
 import PromiseKit
 
-enum AssetInternalValue: Codable {
+enum AssetInternalValue: Codable, Equatable {
+    static func == (lhs: AssetInternalValue, rhs: AssetInternalValue) -> Bool {
+        return lhs.description == rhs.description
+    }
+
     var description: String {
         switch self {
         case .address(let value):
@@ -102,6 +106,7 @@ enum AssetInternalValue: Codable {
         case uint
         case generalisedTime
         case bool
+        case openSeaNonFungibleTraits
     }
 
     enum AssetIntervalValueCodingError: Error {
@@ -140,6 +145,11 @@ enum AssetInternalValue: Codable {
             self = .bool(bool)
             return
         }
+
+        if let traits = try? container.decode([OpenSeaNonFungibleTrait].self, forKey: .openSeaNonFungibleTraits) {
+            self = .openSeaNonFungibleTraits(traits)
+            return
+        }
         throw AssetIntervalValueCodingError.cannotDecode
     }
 
@@ -158,8 +168,10 @@ enum AssetInternalValue: Codable {
             try container.encode(value, forKey: .generalisedTime)
         case .bool(let value):
             try container.encode(value, forKey: .bool)
-        case .subscribable, .openSeaNonFungibleTraits:
+        case .subscribable:
             throw AssetIntervalValueCodingError.cannotEncode(self)
+        case .openSeaNonFungibleTraits(let value):
+            try container.encode(value, forKey: .openSeaNonFungibleTraits)
         case .bytes(let value):
             try container.encode(value, forKey: .bytes)
         }
