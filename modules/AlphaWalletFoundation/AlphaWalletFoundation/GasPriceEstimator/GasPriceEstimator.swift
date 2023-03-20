@@ -50,14 +50,18 @@ public final class LegacyGasPriceEstimator: GasPriceEstimator {
     public func estimateGasPrice() -> AnyPublisher<GasEstimates, PromiseError> {
         if EtherscanGasPriceEstimator.supports(server: blockchainProvider.server) {
             return estimateGasPriceForUsingEtherscanApi(server: blockchainProvider.server)
-                .catch { [blockchainProvider] _ in blockchainProvider.gasEstimates() }
-                .eraseToAnyPublisher()
+                .catch { [blockchainProvider] _ in
+                    return Future { try await blockchainProvider.gasEstimates() }
+                        .mapError { PromiseError(error: $0) }
+                }.eraseToAnyPublisher()
         } else {
             switch blockchainProvider.server.serverWithEnhancedSupport {
             case .xDai:
                 return .just(.init(standard: GasPriceConfiguration.xDaiGasPrice))
             case .main, .polygon, .binance_smart_chain, .heco, .rinkeby, .arbitrum, .klaytnCypress, .klaytnBaobabTestnet, nil:
-                return blockchainProvider.gasEstimates()
+                return Future { [blockchainProvider] in try await blockchainProvider.gasEstimates() }
+                    .mapError { PromiseError(error: $0) }
+                    .eraseToAnyPublisher()
             }
         }
     }
